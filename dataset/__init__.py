@@ -182,10 +182,21 @@ def create_dataset(dataset, config, epoch=None):
 
 def vqa_collate_fn(batch):
     image_list, question_list, answer_list, weight_list, n = [], [], [], [], []
-    for image, question, answer, weights in batch:
+    for image, question, answer, weights, ann in batch:
+        image_list.append(image)
+        # question_list.append(question)
+        question_list.append(ann["sgg_question"])
+        weight_list += weights       
+        answer_list += answer
+        n.append(len(answer))
+    return torch.stack(image_list,dim=0), question_list, answer_list, torch.Tensor(weight_list), n
+
+def vqa_collate_fn_no_sgg(batch):
+    image_list, question_list, answer_list, weight_list, n = [], [], [], [], []
+    for image, question, answer, weights, ann in batch:
         image_list.append(image)
         question_list.append(question)
-        weight_list += weights       
+        weight_list += weights
         answer_list += answer
         n.append(len(answer))
     return torch.stack(image_list,dim=0), question_list, answer_list, torch.Tensor(weight_list), n

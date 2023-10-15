@@ -1,5 +1,7 @@
 import argparse
 import os
+from collections import defaultdict
+
 try:
     import ruamel_yaml as yaml
 except:
@@ -24,13 +26,64 @@ from models.tokenization_bert import BertTokenizer
 
 import utils
 from dataset.utils import save_result
-from dataset import create_dataset, create_sampler, create_loader, vqa_collate_fn
+from dataset import create_dataset, create_sampler, create_loader, vqa_collate_fn, vqa_collate_fn_no_sgg
+from dataset.utils import load_jsonl
 
 from scheduler import create_scheduler
 from optim import create_optimizer, create_two_optimizer
 
 import warnings
 warnings.filterwarnings("ignore")
+import os
+import numpy as np
+from gensim.models import KeyedVectors
+from scipy.spatial.distance import cosine
+import urllib.request
+from tqdm import tqdm
+import Levenshtein
+
+# Path to the GloVe file
+glove_file = "glove.6B.100d.txt"
+
+class TqdmUpTo(tqdm):
+    """Provide `tqdm` progress bar for urllib."""
+    def update_to(self, blocks=1, bsize=1, tsize=None):
+        if tsize is not None:
+            self.total = tsize
+        self.update(blocks * bsize - self.n)
+
+def download_with_progress(url, filename):
+    with TqdmUpTo(unit='B', unit_scale=True, miniters=1, desc=url.split('/')[-1]) as t:
+        urllib.request.urlretrieve(url, filename, reporthook=t.update_to)
+
+# Check if the file exists, if not download it
+if not os.path.exists(glove_file):
+    print(f"{glove_file} not found. Downloading...")
+    url = "http://nlp.stanford.edu/data/glove.6B.zip"
+    zip_file = "glove.6B.zip"
+    download_with_progress(url, zip_file)
+
+    # Extract the desired file from the zip archive
+    import zipfile
+    with zipfile.ZipFile(zip_file, 'r') as z:
+        z.extract(glove_file)
+    print(f"Downloaded and extracted {glove_file}")
+
+# Load GloVe vectors using Gensim
+glove = KeyedVectors.load_word2vec_format(glove_file, binary=False, no_header=True)
+vocab = list(glove.index_to_key)
+
+def phrase_embedding(phrase, model):
+    """Compute the average embedding of the phrase."""
+    words = phrase.split()
+    vectors = [model[word] for word in words if word in vocab]
+    return np.mean(vectors, axis=0) if vectors else np.zeros(model.vector_size)
+
+def compute_distance(phrase1, phrase2, model):
+    """Compute cosine distance between two phrases' embeddings."""
+    vec1 = phrase_embedding(phrase1, model)
+    vec2 = phrase_embedding(phrase2, model)
+    return cosine(vec1, vec2)
 
 
 def train(model, data_loader, optimizer, tokenizer, epoch, warmup_steps, device, scheduler, config, do_amp=False,
@@ -105,6 +158,7 @@ def train(model, data_loader, optimizer, tokenizer, epoch, warmup_steps, device,
 
 @torch.no_grad()
 def evaluation(model, data_loader, tokenizer, device, config):
+    raise NotImplementedError
     # test
     model.eval()
 
@@ -130,43 +184,6 @@ def evaluation(model, data_loader, tokenizer, device, config):
 
     return result
 
-@torch.no_grad()
-def evaluate_(model, data_loader, dataset, tokenizer, device, config):
-    # test
-    model.eval()
-
-    metric_logger = utils.MetricLogger(delimiter="  ")
-
-    header = 'Evaluation:'
-    print_freq = 50
-    
-    answer_list = [answer+config['eos'] for answer in data_loader.dataset.answer_list]
-    answer_input = tokenizer(answer_list, padding='longest', return_tensors='pt').to(device)    
-    for n, (video, question, question_id) in enumerate(metric_logger.log_every(data_loader, print_freq, header)):        
-        video = video.to(device,non_blocking=True)             
-        question_input = tokenizer(question, padding='longest', return_tensors="pt").to(device)        
-
-        topk_ids, topk_probs = model(video, question_input, answer_input, train=False, k=config['k_test'])      
-        result = []
-        
-        for ques_id, topk_id, topk_prob in zip(question_id, topk_ids, topk_probs):
-            ques_id = int(ques_id.item())          
-            if config.get('open_generation', True):
-                ans = tokenizer.decode(topk_id[0]).replace("[SEP]", "").replace("[CLS]", "").replace("[PAD]", "").strip()
-                result.append({"question_id":ques_id, "answer":ans})   
-            else:
-                _, pred = topk_prob.max(dim=0)
-                result.append({"question_id": ques_id, "answer": data_loader.dataset.answer_list[topk_id[pred]]})
-        accuracy = cal_metric(result, dataset)
-        
-        metric_logger.meters['acc'].update(accuracy, n=video.size(0))
-
-    # gather the stats from all processes
-    torch.cuda.empty_cache()
-    metric_logger.synchronize_between_processes()
-    print("Averaged stats:", metric_logger.global_avg())
-    return {k: "{:.4f}".format(meter.global_avg) for k, meter in metric_logger.meters.items()}
-
 
 @torch.no_grad()
 def evaluate(model, data_loader, dataset, tokenizer, device, answer_list, rerank, config):
@@ -185,9 +202,11 @@ def evaluate(model, data_loader, dataset, tokenizer, device, answer_list, rerank
     
     answer_list_ = [answer+config['eos'] for answer in answer_list]
     answer_input = tokenizer(answer_list_, padding='longest', return_tensors='pt').to(device)    
-    for n, (video, question, question_id) in enumerate(metric_logger.log_every(data_loader, print_freq, header)):        
-        video = video.to(device,non_blocking=True)             
-        question_input = tokenizer(question, padding='longest', return_tensors="pt").to(device)        
+    for n, (video, question, question_id, ann) in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
+        if 'sgg_question' in ann and config['sgg']:
+            question = ann['sgg_question']
+        video = video.to(device,non_blocking=True)
+        question_input = tokenizer(question, padding='longest', return_tensors="pt").to(device)
 
         topk_ids, topk_probs = model(video, question_input, answer_input, train=False, k=config['k_test'], rerank=rerank)      
         result = []
@@ -200,9 +219,8 @@ def evaluate(model, data_loader, dataset, tokenizer, device, answer_list, rerank
             else:
                 _, pred = topk_prob.max(dim=0)
                 result.append({"question_id": ques_id, "answer": answer_list[topk_id[pred]]})
-        accuracy = cal_metric(result, dataset)
-        
-        metric_logger.meters['acc'].update(accuracy, n=video.size(0))
+        metrics = cal_metric(result, dataset)
+        metric_logger.update(**metrics)
 
     # gather the stats from all processes
     torch.cuda.empty_cache()
@@ -212,8 +230,7 @@ def evaluate(model, data_loader, dataset, tokenizer, device, answer_list, rerank
 
 
 def cal_metric(vqa_result, val_file):
-    with open(val_file, "r") as f:
-        data_list = [json.loads(l.strip("\n")) for l in f.readlines()]
+    data_list = load_jsonl(val_file)
     id2datum = {}
     for idx, each in enumerate(data_list):
         question_id = idx
@@ -222,18 +239,23 @@ def cal_metric(vqa_result, val_file):
             'video_id': each['video_id'],
             'answer': each['answer'],
         }
-    score = 0.
+    result = defaultdict(float)
+    result['acc'] = 0
     for each in vqa_result:
         quesid = each["question_id"]
         ans = each["answer"]
         label = id2datum[quesid]['answer']
+        semantic_distance = compute_distance(ans, label, glove)
+        result['semantic_distance'] += semantic_distance
+        result['edit_distance'] += Levenshtein.distance(ans, label)
         if label == ans:
-            score += 1
-    return score / len(vqa_result)
+            result['acc'] += 1
+    result = {k: v / len(vqa_result) for k, v in result.items()}
+    return result
 
 def main(args, config):
-    print('master addr: ', os.environ['MASTER_ADDR'])
-    print('master port: ', os.environ['MASTER_PORT'])
+    print('master addr: ', os.environ.get('MASTER_ADDR', 'localhost'))
+    print('master port: ', os.environ.get('MASTER_PORT', 0))
 
     utils.init_distributed_mode(args)    
     device = torch.device(args.device)
@@ -322,14 +344,16 @@ def main(args, config):
     if args.distributed:
         num_tasks = utils.get_world_size()
         global_rank = utils.get_rank()
-        samplers = create_sampler(datasets, [True, False], num_tasks, global_rank)
+        samplers = create_sampler(datasets, [True, True], num_tasks, global_rank)
     else:
         samplers = [None, None]
+
+    collate_fn = vqa_collate_fn if config['sgg'] else vqa_collate_fn_no_sgg
 
     train_loader, val_loader = create_loader(datasets,samplers,
                                             batch_size=[config['batch_size_train'],config['batch_size_test']],
                                             num_workers=[16, 16],is_trains=[True, False],
-                                            collate_fns=[vqa_collate_fn,None])
+                                            collate_fns=[collate_fn,None])
 
     arg_sche = utils.AttrDict(config['schedular'])
     train_step_per_epoch = len(train_loader)
@@ -342,21 +366,21 @@ def main(args, config):
     print("Start training")
     start_time = time.time()
 
-    val_stats = evaluate(model, val_loader, config["label_file"], tokenizer, device, config['answer_list'], False, config)
+    # val_stats = evaluate(model, val_loader, config["label_file"], tokenizer, device, config['answer_list'], False, config)
     # val_stats_rerank = evaluate(model, val_loader, config["label_file"], tokenizer, device, config['answer_list'], True, config)
     # val_stats_rerank_vocab = evaluate(model, val_loader, config["label_file"], tokenizer, device, config['answer_list_vocab'], True, config)
     # val_stats_rerank_vocab_1000 = evaluate(model, val_loader, config["label_file"], tokenizer, device, config['answer_list_vocab_1000'], True, config)
         
-    if utils.is_main_process():
-        log_stats = {**{f'val_{k}': v for k, v in val_stats.items()},
-                     # **{f'val_rerank_{k}': v for k, v in val_stats_rerank.items()},
-                     # **{f'val_rerank_vocab_{k}': v for k, v in val_stats_rerank_vocab.items()},
-                     # **{f'val_rerank_vocab_1000_{k}': v for k, v in val_stats_rerank_vocab_1000.items()},
-                     'epoch': -1,
-                     }
-        with open(os.path.join(args.output_dir, "log.txt"), "a") as f:
-            f.write(json.dumps(log_stats) + "\n")
-        best_acc = float(val_stats['acc'])
+    # if utils.is_main_process():
+    #     log_stats = {**{f'val_{k}': v for k, v in val_stats.items()},
+    #                  # **{f'val_rerank_{k}': v for k, v in val_stats_rerank.items()},
+    #                  # **{f'val_rerank_vocab_{k}': v for k, v in val_stats_rerank_vocab.items()},
+    #                  # **{f'val_rerank_vocab_1000_{k}': v for k, v in val_stats_rerank_vocab_1000.items()},
+    #                  'epoch': -1,
+    #                  }
+    #     with open(os.path.join(args.output_dir, "log.txt"), "a") as f:
+    #         f.write(json.dumps(log_stats) + "\n")
+    #     best_acc = float(val_stats['acc'])
 
     for epoch in range(start_epoch, max_epoch):
         # if epoch > 0:

@@ -51,8 +51,12 @@ from tqdm import tqdm
 
 
 def load_jsonl(filename):
-    with open(filename, "r") as f:
-        return [json.loads(l.strip("\n")) for l in f.readlines()]
+    if filename.endswith('.jsonl'):
+        with open(filename, "r") as f:
+            return [json.loads(l.strip("\n")) for l in f.readlines()]
+    else:
+        with open(filename, "r") as f:
+            return json.load(f)
 
     
 def collect_result(result, result_dir, filename, is_json=True, is_list=True):

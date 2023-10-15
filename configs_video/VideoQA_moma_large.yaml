@@ -15,13 +15,14 @@ schedular: {cooldown_epochs: 0, decay_rate: 1, epochs: 10, lr: 2e-5, min_lr: 1e-
 
 # Data
 read_local_data: true
-train_file: ['datasets/annotations_all/msrvtt_qa/train.jsonl']
-test_file: ['datasets/annotations_all/msrvtt_qa/test.jsonl']
-answer_list: 'datasets/annotations_all/msrvtt_qa/train_ans2label.json'
-answer_list_vocab: 'datasets/annotations_all/msrvtt_qa/vocab.json'
-answer_list_vocab_1000: 'datasets/annotations_all/msrvtt_qa/vocab1000.json'
-label_file: 'datasets/annotations_all/msrvtt_qa/test.jsonl'
-video_root: "datasets/MSRVTT/data/MSRVTT/videos/all"
+train_file: ['datasets/moma_qa/train.json']
+test_file: ['datasets/moma_qa/test.json']
+answer_list: 'datasets/moma_qa/full_ans2label.json'
+answer_list_vocab: 'datasets/moma_qa/vocab.json'
+answer_list_vocab_1000: 'datasets/moma_qa/vocab1000.json'
+label_file: 'datasets/moma_qa/test.json'
+video_root: "moma/videos/raw"
+sgg: true
 
 image_res: 224
 model_num_frames: 16
@@ -31,6 +32,6 @@ vision_width: 1024
 use_checkpoint: true
 k_test: 128
 
-batch_size_train: 1
-batch_size_test: 1
-num_workers: 16
+batch_size_train: 2
+batch_size_test: 2
+num_workers: 24

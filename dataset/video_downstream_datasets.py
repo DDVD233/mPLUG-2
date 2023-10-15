@@ -107,7 +107,7 @@ class video_retrieval_dataset_train(Dataset):
         caption = pre_caption(ann['caption'], self.max_words)
         key = ann['caption'] if self.has_multi_vision_gt else ann['clip_name']
 
-        return video, caption, self.match_ids[key]
+        return video, caption, self.match_ids[key], ann
 
 
 class video_retrieval_dataset_eval(Dataset):
@@ -282,7 +282,7 @@ class video_qa_dataset(Dataset):
             if self.transform:
                 video_array = self.transform(video_array) # (T, C, H, W) -> (C, T, H, W)
                 
-            return video_array, question, answers, weights
+            return video_array, question, answers, weights, ann
         
         elif self.split == 'test':
             question = pre_question(ann['question'], self.max_ques_words)
@@ -312,7 +312,7 @@ class video_qa_dataset(Dataset):
             if self.transform:
                 video_array = self.transform(video_array) # (T, C, H, W) -> (C, T, H, W)
                 
-            return video_array, question, question_id
+            return video_array, question, question_id, ann
 
 
 
