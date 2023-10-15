@@ -7,7 +7,7 @@ WORLD_SIZE=1
 RANK=0
 TOTAL_GPU=$((WORLD_SIZE * GPU_NUM))
 
-checkpoint_dir='mPLUG2_MSRVTT_QA.pth'
+checkpoint_dir='/home/data/models/mplug2/mPLUG2_MSRVTT_QA.pth'
 output_dir='/home/data/models/videoqa_momaqa_'${TOTAL_GPU}
 
 mkdir -p ${output_dir}
